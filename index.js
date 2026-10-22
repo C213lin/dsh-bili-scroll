@@ -2218,11 +2218,28 @@ function reportMeta() {
     return sendJson(res, 404, { ok: false, error: `unknown ${req.method} ${path}` })
   }
 
+  // ⭐ [patch] 只接受本机回环访问。
+  //    /api/bili-duty 这一组端点能改配置（dmMode / dmUid / mentionName / 白名单）、装依赖、
+  //    立刻跑一轮、扫码登录 —— 原本对任何能访问 DSH 端口的调用者都开放。
+  //    判定用 socket 地址而不是 Host 头（Host 可伪造，socket 地址不行）：
+  //      · 拿不到地址（经 Unix socket / 反向代理转发）⇒ 放行，避免误伤；
+  //      · 确实要允许局域网访问时，启动 DSH 前设 BILI_DUTY_ALLOW_NONLOOPBACK=1。
+  function isLoopbackSocket(req) {
+    if (String(process.env.BILI_DUTY_ALLOW_NONLOOPBACK || '') === '1') return true
+    const a = String(req.socket?.remoteAddress ?? '')
+    if (!a) return true
+    return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1' || a.startsWith('::ffff:127.')
+  }
+
   try {
     ctx.effect(() => ctx.webServer.register({
       kind: 'prefix',
       path: '/api/bili-duty',
       handler: async (req, res) => {
+        if (!isLoopbackSocket(req)) {
+          log(`拒绝非回环访问：${req.method} ${req.url} ← ${req.socket?.remoteAddress ?? '?'}`)
+          return sendJson(res, 403, { ok: false, error: '只接受本机回环访问' })
+        }
         try { await handle(req, res, new URL(req.url, 'http://127.0.0.1')) } catch (e) {
           sendJson(res, 500, { ok: false, error: e?.message ?? String(e) })
         }
